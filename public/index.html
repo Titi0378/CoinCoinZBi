@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coincoin Stream</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Landing Page -->
+    <div id="landing">
+        <h1>Coincoin Stream</h1>
+        <p>Sélectionnez votre rôle :</p>
+        <div class="roles">
+            <button id="btn-host">Régie (Host)</button>
+            <button id="btn-camera">Caméra</button>
+        </div>
+    </div>
+
+    <!-- Vue Host (Régie) -->
+    <div id="host-view" class="hidden">
+        <div id="video-area">
+            <div id="video-grid"></div>
+            <!-- Overlay transparent pour de futures images (scoreboard, etc.) -->
+            <div id="overlays">
+                <!-- <img src="scoreboard.png" class="overlay-element" alt="Score"> -->
+            </div>
+        </div>
+        <div id="music-assistant">
+            <!-- Iframe pour l'assistant musical -->
+            <iframe src="about:blank" title="Music Assistant"></iframe>
+            <div class="placeholder-text">Music Assistant (Iframe)</div>
+        </div>
+    </div>
+
+    <!-- Vue Caméra -->
+    <div id="camera-view" class="hidden">
+        <h2>Diffusion en cours...</h2>
+        <video id="local-video" autoplay muted playsinline></video>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
