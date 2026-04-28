@@ -1,175 +1,135 @@
 const socket = io();
+let myRole = '';
+const peers = {}; // Stocke les connexions WebRTC
 
-const landing = document.getElementById('landing');
-const hostView = document.getElementById('host-view');
-const cameraView = document.getElementById('camera-view');
-const btnHost = document.getElementById('btn-host');
-const btnCamera = document.getElementById('btn-camera');
-const videoGrid = document.getElementById('video-grid');
-const localVideo = document.getElementById('local-video');
-
-let localStream;
-const peerConnections = {}; // Map pour stocker les RTCPeerConnection (côté Host) ou la connexion unique (côté Caméra)
-
-const configuration = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-    ]
+// Configuration STUN (gratuit via Google) pour aider à passer les pare-feux
+const rtcConfig = {
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 
-// --- LOGIQUE CHOIX DU RÔLE ---
-
-btnHost.addEventListener('click', () => {
-    landing.classList.add('hidden');
-    hostView.classList.remove('hidden');
-    socket.emit('join', 'host');
-    setupHost();
-});
-
-btnCamera.addEventListener('click', async () => {
-    try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
-        landing.classList.add('hidden');
-        cameraView.classList.remove('hidden');
-        socket.emit('join', 'camera');
-    } catch (err) {
-        alert('Erreur accès caméra: ' + err.message);
+function joinAs(role) {
+    myRole = role;
+    document.getElementById('landing-screen').classList.add('hidden');
+    
+    if (role === 'host') {
+        document.getElementById('host-screen').classList.remove('hidden');
+        socket.emit('join-role', 'host');
+    } else if (role === 'camera') {
+        document.getElementById('camera-screen').classList.remove('hidden');
+        socket.emit('join-role', 'camera');
+        startCamera();
     }
-});
-
-// --- LOGIQUE HOST ---
-
-function setupHost() {
-    socket.on('camera_joined', async (cameraId) => {
-        console.log('Nouvelle caméra connectée:', cameraId);
-        createVideoContainer(cameraId);
-        await initiateCall(cameraId);
-    });
-
-    socket.on('camera_left', (cameraId) => {
-        console.log('Caméra déconnectée:', cameraId);
-        if (peerConnections[cameraId]) {
-            peerConnections[cameraId].close();
-            delete peerConnections[cameraId];
-        }
-        const videoElement = document.getElementById(`container-${cameraId}`);
-        if (videoElement) {
-            videoElement.remove();
-        }
-        updateGridLayout();
-    });
-
-    // Le host reçoit une réponse (answer) d'une caméra
-    socket.on('answer', async (data) => {
-        const pc = peerConnections[data.answerer];
-        if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        }
-    });
-
-    socket.on('ice-candidate', async (data) => {
-        const pc = peerConnections[data.sender];
-        if (pc && data.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-        }
-    });
 }
 
-function createVideoContainer(id) {
-    if (document.getElementById(`container-${id}`)) return;
+// ================= LOGIQUE CAMERA =================
+async function startCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: true });
+        document.getElementById('local-video').srcObject = stream;
 
-    const container = document.createElement('div');
-    container.className = 'video-container';
-    container.id = `container-${id}`;
+        // Quand le host demande une connexion
+        socket.on('webrtc-signal', async (data) => {
+            if (!peers[data.sender]) {
+                const pc = new RTCPeerConnection(rtcConfig);
+                peers[data.sender] = pc;
+                
+                stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-    const video = document.createElement('video');
-    video.id = `video-${id}`;
-    video.autoplay = true;
-    video.playsInline = true;
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        socket.emit('webrtc-signal', { target: data.sender, signal: { type: 'candidate', candidate: event.candidate } });
+                    }
+                };
+            }
 
-    // Toggle fullscreen local lors du clic
-    container.addEventListener('click', () => {
-        const isFullscreen = container.classList.contains('fullscreen');
-        // Retirer fullscreen de tous
-        document.querySelectorAll('.video-container').forEach(c => c.classList.remove('fullscreen'));
-        if (!isFullscreen) {
-            container.classList.add('fullscreen');
+            const pc = peers[data.sender];
+            if (data.signal.type === 'offer') {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                socket.emit('webrtc-signal', { target: data.sender, signal: pc.localDescription });
+            } else if (data.signal.type === 'candidate') {
+                await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
+            }
+        });
+
+    } catch (err) {
+        alert("Erreur d'accès à la caméra. Vérifiez que vous êtes en HTTPS !");
+        console.error(err);
+    }
+}
+
+// ================= LOGIQUE HOST =================
+socket.on('new-camera', async (cameraId) => {
+    if (myRole !== 'host') return;
+
+    const pc = new RTCPeerConnection(rtcConfig);
+    peers[cameraId] = pc;
+
+    // Quand on reçoit le flux vidéo de la caméra
+    pc.ontrack = (event) => {
+        let video = document.getElementById(`vid-${cameraId}`);
+        if (!video) {
+            video = document.createElement('video');
+            video.id = `vid-${cameraId}`;
+            video.autoplay = true;
+            video.playsInline = true;
+            video.className = "w-full h-full object-cover rounded-xl border-2 border-gray-800 shadow-lg cursor-pointer transition-all hover:border-orange-500";
+            
+            // Logique d'agrandissement au clic
+            video.onclick = () => {
+                video.classList.toggle('video-fullscreen');
+            };
+
+            document.getElementById('video-grid').appendChild(video);
+            updateGrid();
         }
-    });
-
-    container.appendChild(video);
-    videoGrid.appendChild(container);
-    updateGridLayout();
-}
-
-function updateGridLayout() {
-    const containers = document.querySelectorAll('.video-container');
-    const count = containers.length;
-    // Ajustement très basique, le CSS grid (auto-fit) s'occupe de la base, on peut affiner ici si besoin.
-}
-
-async function initiateCall(cameraId) {
-    const pc = new RTCPeerConnection(configuration);
-    peerConnections[cameraId] = pc;
+        video.srcObject = event.streams[0];
+    };
 
     pc.onicecandidate = (event) => {
         if (event.candidate) {
-            socket.emit('ice-candidate', {
-                target: cameraId,
-                candidate: event.candidate
-            });
+            socket.emit('webrtc-signal', { target: cameraId, signal: { type: 'candidate', candidate: event.candidate } });
         }
     };
 
-    pc.ontrack = (event) => {
-        const videoElement = document.getElementById(`video-${cameraId}`);
-        if (videoElement && !videoElement.srcObject) {
-            videoElement.srcObject = event.streams[0];
-        }
-    };
-
+    // Le host initie l'offre
     const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
     await pc.setLocalDescription(offer);
-
-    socket.emit('offer', {
-        target: cameraId,
-        sdp: pc.localDescription
-    });
-}
-
-// --- LOGIQUE CAMÉRA ---
-
-let cameraPc = null;
-
-socket.on('offer', async (data) => {
-    // Si la caméra reçoit une offre du Host
-    cameraPc = new RTCPeerConnection(configuration);
-    
-    // Ajouter les flux locaux
-    localStream.getTracks().forEach(track => cameraPc.addTrack(track, localStream));
-
-    cameraPc.onicecandidate = (event) => {
-        if (event.candidate) {
-            socket.emit('ice-candidate', {
-                target: data.caller,
-                candidate: event.candidate
-            });
-        }
-    };
-
-    await cameraPc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    const answer = await cameraPc.createAnswer();
-    await cameraPc.setLocalDescription(answer);
-
-    socket.emit('answer', {
-        target: data.caller,
-        sdp: cameraPc.localDescription
-    });
+    socket.emit('webrtc-signal', { target: cameraId, signal: pc.localDescription });
 });
 
-socket.on('ice-candidate', async (data) => {
-    if (cameraPc && data.candidate) {
-        await cameraPc.addIceCandidate(new RTCIceCandidate(data.candidate));
+// Réception des réponses de la caméra
+socket.on('webrtc-signal', async (data) => {
+    if (myRole !== 'host' || !peers[data.sender]) return;
+    const pc = peers[data.sender];
+
+    if (data.signal.type === 'answer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+    } else if (data.signal.type === 'candidate') {
+        await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
     }
 });
+
+// Nettoyage quand une caméra se déconnecte
+socket.on('camera-disconnected', (cameraId) => {
+    const video = document.getElementById(`vid-${cameraId}`);
+    if (video) {
+        video.remove();
+        updateGrid();
+    }
+    if (peers[cameraId]) {
+        peers[cameraId].close();
+        delete peers[cameraId];
+    }
+});
+
+// Ajuste la grille en fonction du nombre de vidéos
+function updateGrid() {
+    const grid = document.getElementById('video-grid');
+    const count = grid.children.length;
+    grid.className = "w-full h-full grid gap-4 auto-rows-fr place-items-center";
+    if (count === 1) grid.classList.add("grid-cols-1");
+    else if (count <= 4) grid.classList.add("grid-cols-2");
+    else grid.classList.add("grid-cols-3");
+}
